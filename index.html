@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>综合地图</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css" />
+    <style>
+        body, html { margin: 0; padding: 0; height: 100%; }
+        .container { display: flex; height: 100vh; }
+        .sidebar { width: 250px; background-color: #f9f9f9; border-right: 1px solid #ccc; overflow-y: auto; padding: 10px; }
+        .section { padding: 10px; }
+        select, button, input { display: block; margin: 10px auto; width: 80%; padding: 8px; cursor: pointer; }
+        #map { flex: 1; }
+        h4 { text-align: center; margin: 5px 0; }
+        .layer-item {margin: 10px 0;display: flex;align-items: center;justify-content: space-between;padding: 8px;background-color: #f1f1f1;border-radius: 5px;height: 40px;}
+        .layer-item input { width: 60%; margin-right: 10px; padding: 5px; height: 30px; }
+        .layer-item button { height: 30px; padding: 5px; cursor: pointer; margin-left: 5px; display: inline-block; }
+        .layer-item .checkbox { width: 20px; margin-right: 10px; }
+        .layer-item .rename-btn { width: 40%; }
+        .layer-item .other-btn { width: 25%; }
+        .delete-btn { background-color: red; color: white; border: none; cursor: pointer; }
+        #file-upload { margin: 10px auto; }
+        .button-container { display: flex; flex-direction: column; align-items: center; }
+        #coordinates { position: absolute; bottom: 10px; left: 10px; background-color: rgba(255, 255, 255, 0.7); padding: 5px; border-radius: 5px; font-size: 14px; }
+        #query-box {position: absolute;top: 10px;right: 10px;background-color: white;padding: 10px;border: 1px solid #ccc;border-radius: 5px;display: none;width: 320px; z-index: 1000;box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);writing-mode: horizontal-tb;}
+        #query-box .row { display: flex; align-items: center; justify-content: space-between; writing-mode: horizontal-tb;}
+        #query-box input {height: 40px; width: 85%; margin-right: 5px;padding: 0 10px;border: 1px solid #ccc;border-radius: 4px 0 0 4px; box-sizing: border-box; writing-mode: horizontal-tb;}
+        #query-box button { height: 40px; width: 20%;  background-color: #007bff;color: white;border: none;border-radius: 0 4px 4px 0; cursor: pointer;box-sizing: border-box;text-align: center; display: flex;justify-content: center;align-items: center;writing-mode: horizontal-tb;transform: rotate(0deg);font-size: 14px;padding: 0 10px;}
+        #query-box button:hover {background-color: #0056b3;writing-mode: horizontal-tb;}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="sidebar">
+            <div class="section">
+                <h4>底图切换</h4>
+                <select id="basemap-select">
+                    <option value="osm">高德矢量地图</option>
+                    <option value="esri">ESRI卫星影像</option>
+                    <option value="topo">地形图</option>
+                </select>
+            </div>
+            <div class="section">
+                <h4>功能</h4>
+                <div class="button-container">
+                    <button id="draw-btn">绘图功能</button>
+                    <button id="edit-btn">编辑功能</button>
+                    <button id="query-btn">查询功能</button>
+                    <button id="spatial-query-btn">空间查询</button>
+                    <button id="buffer-btn">空间分析</button>
+                    <button id="save-btn">保存图层</button>
+                </div>
+            </div>
+            <div class="section">
+                <h4>加载GeoJSON文件</h4>
+                <input type="file" id="file-upload" accept=".geojson"/>
+            </div>
+            <div class="section">
+                <h4>图层管理</h4>
+                <div id="layer-list"></div>
+            </div>
+        </div>
+        <div id="map"></div>
+        <div id="coordinates"></div>
+        <div id="query-box">
+            <div class="row">
+                <input type="text" id="query-input" placeholder="输入地名或坐标">
+                <button id="query-locate-btn">查询</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
+    <script src="https://unpkg.com/leaflet-geometryutil"></script>
+    <script>
+        var map = L.map('map', { center: [34.043562, 113.869146], zoom: 17, zoomControl: true });
+
+        var baseMaps = {
+            "gaode": L.tileLayer('https://webrd04.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=7&x={x}&y={y}&z={z}'),
+            "esri": L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'),
+            "topo": L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png')
+        };
+
+        var currentBaseMap = baseMaps["gaode"];
+        currentBaseMap.addTo(map);
+
+        document.getElementById('basemap-select').addEventListener('change', function() {
+            map.removeLayer(currentBaseMap);
+            var selectedMap = this.value;
+            currentBaseMap = baseMaps[selectedMap];
+            currentBaseMap.addTo(map);
+        });
+
+        var drawnItems = new L.FeatureGroup();
+        map.addLayer(drawnItems);
+
+        var drawControl = new L.Control.Draw({
+            edit: { featureGroup: drawnItems },
+            draw: {
+                polygon: true, polyline: true, rectangle: true, circle: true, marker: true
+            }
+        });
+
+        let drawActive = false;
+        document.getElementById('draw-btn').onclick = () => {
+            if (drawActive) {
+                map.removeControl(drawControl);
+                drawActive = false;
+            } else {
+                map.addControl(drawControl);
+                drawActive = true;
+            }
+        };
+
+        let editActive = false;
+        var editControl = new L.Control.Draw({
+            edit: { featureGroup: drawnItems },
+            draw: false
+        });
+        const spatialQueryBtn = document.getElementById('spatial-query-btn');
+        const queryBox = document.getElementById('query-box');
+        spatialQueryBtn.addEventListener('click', () => {
+            queryBox.style.display = queryBox.style.display === 'none' ? 'block' : 'none';
+        });
+
+        const markerLayer = L.layerGroup().addTo(map);
+        function addMarker(coords) {
+            markerLayer.clearLayers();
+            L.marker(coords).addTo(markerLayer);
+        }
+
+        document.getElementById('query-locate-btn').addEventListener('click', () => {
+            const input = document.getElementById('query-input').value.trim();
+            if (!input) {
+                alert('请输入地名或坐标');
+                return;
+            }
+            const coords = input.split(',');
+            if (coords.length === 2 && !isNaN(coords[0]) && !isNaN(coords[1])) {
+                const latlng = [parseFloat(coords[0]), parseFloat(coords[1])];
+                map.setView(latlng, 14);
+                addMarker(latlng);
+            } else {
+                fetch(`https://restapi.amap.com/v3/geocode/geo?address=${input}&key=212fc5ca27f11979e6e81aa573b96616`)
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.status === '1' && data.geocodes.length > 0) {
+                            const location = data.geocodes[0].location.split(',');
+                            const latlng = [parseFloat(location[1]), parseFloat(location[0])];
+                            map.setView(latlng, 14);
+                            addMarker(latlng);
+                        } else {
+                            alert('未找到相关位置');
+                        }
+                    })
+                    .catch(() => alert('地名解析失败'));
+            }
+        });
+
+
+        document.getElementById('edit-btn').onclick = () => {
+            if (editActive) {
+                map.removeControl(editControl);
+                editActive = false;
+            } else {
+                map.addControl(editControl);
+                editActive = true;
+            }
+        };
+
+        map.on(L.Draw.Event.CREATED, function (e) {
+            drawnItems.addLayer(e.layer);
+            addLayerToSidebar(e.layer);
+        });
+
+        document.getElementById('query-btn').onclick = () => {
+            let result = [];
+            drawnItems.eachLayer(layer => {
+                if (layer.getLatLngs) {
+                    result.push(layer.getLatLngs());
+                } else if (layer.getLatLng) {
+                    result.push(layer.getLatLng());
+                }
+            });
+            alert("查询到的图形坐标: " + JSON.stringify(result));
+        };
+
+        document.getElementById('buffer-btn').onclick = () => {
+            drawnItems.eachLayer(layer => {
+                if (layer instanceof L.Circle) {
+                    let center = layer.getLatLng();
+                    let radius = layer.getRadius();
+                    let buffer = L.circle(center, { radius: radius + 500, color: 'red' }).addTo(map);
+                    buffer.layerName = "缓冲区-" + new Date().toISOString();
+                    addLayerToSidebar(buffer);
+                    alert("已生成500米缓冲区！");
+                }
+            });
+        };
+
+        document.getElementById('save-btn').onclick = () => {
+            let data = JSON.stringify(drawnItems.toGeoJSON());
+            let blob = new Blob([data], { type: "application/json" });
+            let link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = 'drawn_map.geojson';
+            link.click();
+            alert("图层已保存为GeoJSON文件！");
+        };
+
+        document.getElementById('file-upload').addEventListener('change', function(event) {
+            let file = event.target.files[0];
+            let reader = new FileReader();
+            reader.onload = function(e) {
+                let geojsonData = JSON.parse(e.target.result);
+                let geoJsonLayer = L.geoJSON(geojsonData).addTo(map);
+                geoJsonLayer.eachLayer(function(layer) {
+                    addLayerToSidebar(layer);
+                });
+                alert("GeoJSON文件已加载！");
+            };
+            reader.readAsText(file);
+        });
+
+        function getCoordinates(layer) {
+            if (layer instanceof L.Circle) {
+                return `圆心坐标：${JSON.stringify(layer.getLatLng())}`;
+            }
+            if (layer.getLatLngs) {
+                return JSON.stringify(layer.getLatLngs());
+            } else if (layer.getLatLng) {
+                return JSON.stringify(layer.getLatLng());
+            }
+            return "无坐标数据";
+        }
+
+        function getArea(layer) {
+            if (layer instanceof L.Polygon || layer instanceof L.Rectangle) {
+                let area = L.GeometryUtil.geodesicArea(layer.getLatLngs()[0]);
+                return area.toFixed(2);
+            }
+            if (layer instanceof L.Circle) {
+                let radius = layer.getRadius();
+                let area = Math.PI * radius * radius;
+                return area.toFixed(2);
+            }
+            return "无面积数据";
+        }
+
+        function addLayerToSidebar(layer) {
+            let layerName = prompt("请输入图层名称", "新图层");
+            layer.layerName = layerName || "无名称图层";
+
+            // 确保图层名称不重复
+            let existingNames = [];
+            document.querySelectorAll('.layer-item').forEach(item => {
+                existingNames.push(item.querySelector('.rename-btn').textContent);
+            });
+
+            // 如果图层名称重复，重新提示
+            while (existingNames.includes(layer.layerName)) {
+                layer.layerName = prompt("图层名称不能重复，请重新输入", layer.layerName);
+                existingNames = [];
+                document.querySelectorAll('.layer-item').forEach(item => {
+                    existingNames.push(item.querySelector('.rename-btn').textContent);
+                });
+            }
+
+            let layerItem = document.createElement('div');
+            layerItem.className = 'layer-item';
+
+            // 显示图层名称并允许编辑
+            let layerNameDiv = document.createElement('div');
+            layerNameDiv.textContent = layer.layerName;
+            layerNameDiv.classList.add('rename-btn');
+            layerNameDiv.setAttribute("contenteditable", "true");  // 使图层名称可编辑
+            layerNameDiv.addEventListener('blur', function() {
+                if (existingNames.includes(layerNameDiv.textContent)) {
+                    alert("图层名称不能重复！");
+                    layerNameDiv.textContent = layer.layerName;  // 恢复原名称
+                    return;
+                }
+                layer.layerName = layerNameDiv.textContent;
+            });
+
+            // 显示图层是否显示的复选框
+            let checkBox = document.createElement('input');
+            checkBox.type = 'checkbox';
+            checkBox.checked = true;
+            checkBox.classList.add('checkbox');
+            checkBox.addEventListener('change', function() {
+                if (checkBox.checked) {
+                    map.addLayer(layer);
+                } else {
+                    map.removeLayer(layer);
+                }
+            });
+
+            // 属性按钮
+            let showPropsButton = document.createElement('button');
+            showPropsButton.textContent = "属性";
+            showPropsButton.classList.add('other-btn');
+            showPropsButton.onclick = () => {
+                let coordinates = getCoordinates(layer);
+                let area = getArea(layer);
+                let radius = layer instanceof L.Circle ? layer.getRadius() : "无半径数据";
+                alert(`图层名称：${layer.layerName}\n坐标：${coordinates}\n半径：${radius} 米\n面积：${area} 平方米`);
+            };
+
+            // 删除按钮
+            let deleteButton = document.createElement('button');
+            deleteButton.textContent = "删除";
+            deleteButton.classList.add('delete-btn', 'other-btn');
+            deleteButton.onclick = () => {
+                map.removeLayer(layer);
+                document.getElementById('layer-list').removeChild(layerItem);
+                alert(`图层 ${layer.layerName} 已删除`);
+            };
+
+            layerItem.appendChild(checkBox);
+            layerItem.appendChild(layerNameDiv);
+            layerItem.appendChild(showPropsButton);
+            layerItem.appendChild(deleteButton);
+            document.getElementById('layer-list').appendChild(layerItem);
+        }
+
+        map.on('mousemove', function(e) {
+            var latlng = e.latlng;
+            document.getElementById('coordinates').textContent = `纬度: ${latlng.lat.toFixed(5)} | 经度: ${latlng.lng.toFixed(5)}`;
+        });
+    </script>
+</body>
+</html>
